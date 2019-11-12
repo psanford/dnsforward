@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
@@ -27,7 +30,9 @@ func main() {
 type server struct {
 	mux *dns.ServeMux
 
-	clients []*client
+	logStream *json.Encoder
+	nextID    uint32
+	clients   []*client
 }
 
 func newServer() *server {
@@ -49,8 +54,9 @@ func newServer() *server {
 	}
 
 	s := &server{
-		mux:     dns.NewServeMux(),
-		clients: clients,
+		mux:       dns.NewServeMux(),
+		clients:   clients,
+		logStream: json.NewEncoder(os.Stderr),
 	}
 
 	s.mux.HandleFunc(".", s.handleRequest)
@@ -59,7 +65,11 @@ func newServer() *server {
 }
 
 func (s *server) handleRequest(w dns.ResponseWriter, r *dns.Msg) {
-	s.logRequest(r)
+	t0 := time.Now()
+	idI := atomic.AddUint32(&s.nextID, 1)
+	id := fmt.Sprintf("%d-%d", idI, t0.Unix())
+
+	s.logRequest(id, r)
 
 	ctx := context.Background()
 
@@ -67,7 +77,7 @@ func (s *server) handleRequest(w dns.ResponseWriter, r *dns.Msg) {
 	for _, c := range s.clients {
 		c := c
 		go func() {
-			s.queryBackend(ctx, c, r, ch)
+			s.queryBackend(ctx, c, id, r, ch)
 		}()
 	}
 
@@ -92,11 +102,12 @@ func (s *server) handleRequest(w dns.ResponseWriter, r *dns.Msg) {
 	log.Printf("evt=handle_request_complete")
 }
 
-func (s *server) queryBackend(ctx context.Context, c *client, m *dns.Msg, resultChan chan queryResult) {
+func (s *server) queryBackend(ctx context.Context, c *client, id string, m *dns.Msg, resultChan chan queryResult) {
 	t0 := time.Now()
 	r, rtt, err := c.exchanger.Exchange(ctx, m)
 	resultChan <- queryResult{
 		r:         r,
+		id:        id,
 		rtt:       rtt,
 		err:       err,
 		queryTime: time.Since(t0),
@@ -109,6 +120,7 @@ func (s *server) queryBackend(ctx context.Context, c *client, m *dns.Msg, result
 
 type queryResult struct {
 	r         *dns.Msg
+	id        string
 	rtt       time.Duration
 	err       error
 	queryTime time.Duration
@@ -117,20 +129,84 @@ type queryResult struct {
 	addr      string
 }
 
+type logResultMsg struct {
+	TS          time.Time `json:"ts"`
+	Evt         string    `json:"evt"`
+	ID          string    `json:"id"`
+	DurationUS  int64     `json:"duration_us"`
+	Backend     string    `json:"backend"`
+	Mode        string    `json:"mode"`
+	BackendAddr string    `json:"backend_addr"`
+	Error       error     `json:"error,omitempty"`
+	Req         string    `json:"req"`
+}
+
 func (s *server) logResult(req *dns.Msg, result queryResult) {
-	if result.err != nil {
-		log.Printf("evt=backend_result_err req=%s err=%s query_time=%s name=%s mode=%s addr=%s", msg{*req}, result.err, result.queryTime, result.name, result.mode, result.addr)
-	} else {
-		log.Printf("evt=backend_result req=%s result=%s  query_time=%s name=%s mode=%s addr=%s", msg{*req}, msg{*result.r}, result.queryTime, result.name, result.mode, result.addr)
+	rr := msg{*req}
+	m := logResultMsg{
+		TS:          time.Now(),
+		Evt:         "backend_result",
+		ID:          result.id,
+		DurationUS:  result.queryTime.Microseconds(),
+		Backend:     result.name,
+		Mode:        result.mode.String(),
+		BackendAddr: result.addr,
+		Error:       result.err,
+		Req:         rr.String(),
 	}
+
+	s.logJSON(m)
+}
+
+func (s *server) logJSON(m interface{}) {
+	s.logStream.Encode(m)
+}
+
+type logFirstResultMsg struct {
+	TS          time.Time `json:"ts"`
+	Evt         string    `json:"evt"`
+	ID          string    `json:"id"`
+	DurationUS  int64     `json:"duration_us"`
+	Backend     string    `json:"backend"`
+	Mode        string    `json:"mode"`
+	BackendAddr string    `json:"backend_addr"`
+	Result      string    `json:"result"`
 }
 
 func (s *server) logFirstResult(req *dns.Msg, result queryResult) {
-	log.Printf("evt=first_result req=%s result=%s query_time=%s name=%s mode=%s addr=%s", msg{*req}, msg{*result.r}, result.queryTime, result.name, result.mode, result.addr)
+	rr := msg{*result.r}
+
+	m := logFirstResultMsg{
+		TS:          time.Now(),
+		Evt:         "first_result",
+		ID:          result.id,
+		DurationUS:  result.queryTime.Microseconds(),
+		Backend:     result.name,
+		Mode:        result.mode.String(),
+		BackendAddr: result.addr,
+		Result:      rr.String(),
+	}
+
+	s.logJSON(m)
 }
 
-func (s *server) logRequest(r *dns.Msg) {
-	log.Printf("evt=request r=%s", msg{*r})
+type logRequest struct {
+	TS  time.Time `json:"ts"`
+	Evt string    `json:"evt"`
+	ID  string    `json:"id"`
+	Req string    `json:"req"`
+}
+
+func (s *server) logRequest(id string, req *dns.Msg) {
+	rr := msg{*req}
+	m := logResultMsg{
+		TS:  time.Now(),
+		Evt: "request",
+		ID:  id,
+		Req: rr.String(),
+	}
+
+	s.logJSON(m)
 }
 
 type msg struct {
