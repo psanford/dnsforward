@@ -9,7 +9,7 @@ option (gogoproto.unmarshaler_all) = true;
 option (gogoproto.marshaler_all) = true;
 
 message Config {
-  repeated Server servers = 1;
+  repeated Server server = 1 [(gogoproto.customname) = "Servers", (gogoproto.nullable) = false];
 }
 
 message Server {
