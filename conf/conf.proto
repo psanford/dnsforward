@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package conf;
+
+import "gogoproto/gogo.proto";
+
+option (gogoproto.sizer_all) = true;
+option (gogoproto.unmarshaler_all) = true;
+option (gogoproto.marshaler_all) = true;
+
+message Config {
+  repeated Server servers = 1;
+}
+
+message Server {
+  string name = 1;
+  enum Type {
+    Dummy = 0;
+    UDP = 1;
+    DOH = 2;
+  }
+  Type type = 2;
+  string host_port = 3;
+  string doh_url = 4;
+}
