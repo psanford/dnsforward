@@ -6,18 +6,25 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/psanford/pnsforward/conf"
 	"github.com/psanford/pnsforward/doh"
 )
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
-	s := newServer()
+	config, err := conf.Load("pns.conf")
+	if err != nil {
+		panic(err)
+	}
+
+	s := newServer(config)
 	server := &dns.Server{
 		Net:     "udp",
 		Addr:    "localhost:53",
@@ -35,22 +42,21 @@ type server struct {
 	clients   []*client
 }
 
-func newServer() *server {
-	clients := []*client{
-		newClassicClient("google", "8.8.8.8:53"),
-		// newClassicClient("google", "8.8.4.4:53"),
-		newClassicClient("cloudflare", "1.1.1.1:53"),
-		// newClassicClient("cloudflare", "1.0.0.1:53"),
+func newServer(config *conf.Config) *server {
+	var clients []*client
+	for _, s := range config.Servers {
+		switch s.Type {
+		case conf.Server_UDP:
+			clients = append(clients, newClassicClient(s.Name, s.HostPort))
+		case conf.Server_DOH:
+			clients = append(clients, newDOHClient(s.DohUrl, s.HostPort))
+		default:
+			log.Fatalf("Invalid server config: %+v", s)
+		}
+	}
 
-		newClassicClient("sonic", "208.201.224.11:53"),
-		newClassicClient("sonic", "208.201.224.33:53"),
-
-		// newClassicClient("cloudflare", "2606:4700:4700::1111"),
-		// newClassicClient("cloudflare", "2606:4700:4700::1001"),
-
-		newDOHClient("https://dns.google/dns-query", "8.8.8.8:443"),
-		// newDOHClient("https://dns.google/dns-query", "8.8.4.4:443"),
-		newDOHClient("https://cloudflare-dns.com/dns-query", "1.1.1.1:443"),
+	if len(clients) < 1 {
+		log.Fatalf("No backend servers found in config")
 	}
 
 	s := &server{
@@ -67,14 +73,15 @@ func newServer() *server {
 func (s *server) handleRequest(w dns.ResponseWriter, r *dns.Msg) {
 	t0 := time.Now()
 	idI := atomic.AddUint32(&s.nextID, 1)
-	id := fmt.Sprintf("%d-%d", idI, t0.Unix())
+	id := fmt.Sprintf("%d-%d", t0.Unix(), idI)
 
 	s.logRequest(id, r)
 
 	ctx := context.Background()
 
 	ch := make(chan queryResult)
-	for _, c := range s.clients {
+	clients := s.shufClients()
+	for _, c := range clients {
 		c := c
 		go func() {
 			s.queryBackend(ctx, c, id, r, ch)
@@ -84,7 +91,7 @@ func (s *server) handleRequest(w dns.ResponseWriter, r *dns.Msg) {
 	done := make(chan struct{})
 	go func() {
 		var sentResult bool
-		for range s.clients {
+		for range clients {
 			result := <-ch
 			if !sentResult && result.err == nil {
 				w.WriteMsg(result.r)
@@ -95,11 +102,22 @@ func (s *server) handleRequest(w dns.ResponseWriter, r *dns.Msg) {
 
 			s.logResult(r, result)
 		}
+
+		if !sentResult {
+			s.logFailure(r, id, len(clients))
+		}
 	}()
 
 	<-done
+}
 
-	log.Printf("evt=handle_request_complete")
+func (s *server) shufClients() []*client {
+	list := make([]*client, len(s.clients))
+	copy(list, s.clients)
+	rand.Shuffle(len(list), func(i, j int) {
+		list[i], list[j] = list[j], list[i]
+	})
+	return list
 }
 
 func (s *server) queryBackend(ctx context.Context, c *client, id string, m *dns.Msg, resultChan chan queryResult) {
@@ -153,6 +171,27 @@ func (s *server) logResult(req *dns.Msg, result queryResult) {
 		BackendAddr: result.addr,
 		Error:       result.err,
 		Req:         rr.String(),
+	}
+
+	s.logJSON(m)
+}
+
+type logFailureMsg struct {
+	TS           time.Time `json:"ts"`
+	Evt          string    `json:"evt"`
+	ID           string    `json:"id"`
+	Req          string    `json:"req"`
+	BackendCount int       `json:"backend_count"`
+}
+
+func (s *server) logFailure(req *dns.Msg, id string, backendCount int) {
+	rr := msg{*req}
+	m := logFailureMsg{
+		TS:           time.Now(),
+		Evt:          "query_failure",
+		ID:           id,
+		Req:          rr.String(),
+		BackendCount: backendCount,
 	}
 
 	s.logJSON(m)
