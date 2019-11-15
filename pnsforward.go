@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"math/rand"
@@ -16,10 +17,14 @@ import (
 	"github.com/psanford/pnsforward/doh"
 )
 
+var listenAddr = flag.String("listen", "localhost:53", "Listen address")
+var confFile = flag.String("conf", "pns.conf", "Path to config file")
+
 func main() {
+	flag.Parse()
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
-	config, err := conf.Load("pns.conf")
+	config, err := conf.Load(*confFile)
 	if err != nil {
 		panic(err)
 	}
@@ -27,7 +32,7 @@ func main() {
 	s := newServer(config)
 	server := &dns.Server{
 		Net:     "udp",
-		Addr:    "localhost:53",
+		Addr:    *listenAddr,
 		Handler: s.mux,
 	}
 
