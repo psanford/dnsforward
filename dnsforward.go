@@ -19,7 +19,6 @@ import (
 	"github.com/psanford/dnsforward/doh"
 )
 
-var listenAddr = flag.String("listen", "localhost:53", "Listen address (or SOCKET_ACTIVATION)")
 var confFile = flag.String("conf", "dnsforward.conf", "Path to config file")
 
 func main() {
@@ -31,8 +30,12 @@ func main() {
 		panic(err)
 	}
 
+	if config.ListenAddr == "" {
+		config.ListenAddr = "127.0.0.1:53"
+	}
+
 	var pc net.PacketConn
-	if *listenAddr == "SOCKET_ACTIVATION" {
+	if config.ListenAddr == "SOCKET_ACTIVATION" {
 		listeners, err := activation.PacketConns()
 		if err != nil {
 			log.Fatalf("Socket activation error, are you running under systemd?: %s", err)
@@ -53,7 +56,7 @@ func main() {
 		server.PacketConn = pc
 		panic(server.ActivateAndServe())
 	} else {
-		server.Addr = *listenAddr
+		server.Addr = config.ListenAddr
 		panic(server.ListenAndServe())
 	}
 }

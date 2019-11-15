@@ -9,6 +9,7 @@ import (
 
 var configText = `
 resolve_mode: InOrder
+listen_addr: "SOCKET_ACTIVATION"
 server: {
   name: "google"
   type: UDP

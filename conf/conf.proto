@@ -16,6 +16,7 @@ message Config {
     Concurrent = 2;
   }
   ResolveMode resolve_mode = 2;
+  string listen_addr = 3; // defaults to 127.0.0.1:53; use "SOCKET_ACTIVATION" for systemd socket activation
 }
 
 message Server {
