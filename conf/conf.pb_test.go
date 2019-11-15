@@ -8,6 +8,7 @@ import (
 )
 
 var configText = `
+resolve_mode: InOrder
 server: {
   name: "google"
   type: UDP

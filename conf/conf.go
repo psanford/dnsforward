@@ -16,7 +16,7 @@ func Load(path string) (*Config, error) {
 	var conf Config
 	err = proto.UnmarshalText(string(text), &conf)
 	if err != nil {
-		return nil, fmt.Errorf("Config parse error: %+w", err)
+		return nil, fmt.Errorf("Config parse error: %w", err)
 	}
 
 	return &conf, nil

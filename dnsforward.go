@@ -45,6 +45,7 @@ type server struct {
 	logStream *json.Encoder
 	nextID    uint32
 	clients   []*client
+	mode      conf.Config_ResolveMode
 }
 
 func newServer(config *conf.Config) *server {
@@ -68,6 +69,7 @@ func newServer(config *conf.Config) *server {
 		mux:       dns.NewServeMux(),
 		clients:   clients,
 		logStream: json.NewEncoder(os.Stderr),
+		mode:      config.ResoveMode,
 	}
 
 	s.mux.HandleFunc(".", s.handleRequest)
@@ -83,13 +85,39 @@ func (s *server) handleRequest(w dns.ResponseWriter, r *dns.Msg) {
 	s.logRequest(id, r)
 
 	ctx := context.Background()
+	switch s.mode {
+	case conf.Config_Random:
+		clients := s.shufClients()
+		s.handleRequestSerially(ctx, id, w, r, clients)
+	case conf.Config_InOrder:
+		s.handleRequestSerially(ctx, id, w, r, s.clients)
+	case conf.Config_Concurrent:
+		s.handleRequestConcurrent(ctx, id, w, r)
+	}
+}
 
+func (s *server) handleRequestSerially(ctx context.Context, id string, w dns.ResponseWriter, r *dns.Msg, clients []*client) {
+	for _, c := range clients {
+		result := s.queryBackend(ctx, c, id, r)
+		if result.err == nil {
+			w.WriteMsg(result.r)
+			s.logFirstResult(r, result)
+			return
+		} else {
+			s.logResult(r, result)
+		}
+	}
+
+	s.logFailure(r, id, len(clients))
+}
+
+func (s *server) handleRequestConcurrent(ctx context.Context, id string, w dns.ResponseWriter, r *dns.Msg) {
 	ch := make(chan queryResult)
 	clients := s.shufClients()
 	for _, c := range clients {
 		c := c
 		go func() {
-			s.queryBackend(ctx, c, id, r, ch)
+			ch <- s.queryBackend(ctx, c, id, r)
 		}()
 	}
 
@@ -125,10 +153,10 @@ func (s *server) shufClients() []*client {
 	return list
 }
 
-func (s *server) queryBackend(ctx context.Context, c *client, id string, m *dns.Msg, resultChan chan queryResult) {
+func (s *server) queryBackend(ctx context.Context, c *client, id string, m *dns.Msg) queryResult {
 	t0 := time.Now()
 	r, rtt, err := c.exchanger.Exchange(ctx, m)
-	resultChan <- queryResult{
+	return queryResult{
 		r:         r,
 		id:        id,
 		rtt:       rtt,
@@ -138,7 +166,6 @@ func (s *server) queryBackend(ctx context.Context, c *client, id string, m *dns.
 		mode:      c.mode,
 		addr:      c.addr,
 	}
-
 }
 
 type queryResult struct {
