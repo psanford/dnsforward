@@ -8,16 +8,18 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"net"
 	"os"
 	"sync/atomic"
 	"time"
 
+	"github.com/coreos/go-systemd/v22/activation"
 	"github.com/miekg/dns"
 	"github.com/psanford/dnsforward/conf"
 	"github.com/psanford/dnsforward/doh"
 )
 
-var listenAddr = flag.String("listen", "localhost:53", "Listen address")
+var listenAddr = flag.String("listen", "localhost:53", "Listen address (or SOCKET_ACTIVATION)")
 var confFile = flag.String("conf", "dnsforward.conf", "Path to config file")
 
 func main() {
@@ -29,14 +31,31 @@ func main() {
 		panic(err)
 	}
 
+	var pc net.PacketConn
+	if *listenAddr == "SOCKET_ACTIVATION" {
+		listeners, err := activation.PacketConns()
+		if err != nil {
+			log.Fatalf("Socket activation error, are you running under systemd?: %s", err)
+		}
+		if len(listeners) == 0 {
+			log.Fatalf("No socket provided running in SOCKET_ACTIVATION mode")
+		}
+
+		pc = listeners[0]
+	}
+
 	s := newServer(config)
 	server := &dns.Server{
 		Net:     "udp",
-		Addr:    *listenAddr,
 		Handler: s.mux,
 	}
-
-	panic(server.ListenAndServe())
+	if pc != nil {
+		server.PacketConn = pc
+		panic(server.ActivateAndServe())
+	} else {
+		server.Addr = *listenAddr
+		panic(server.ListenAndServe())
+	}
 }
 
 type server struct {
@@ -69,7 +88,7 @@ func newServer(config *conf.Config) *server {
 		mux:       dns.NewServeMux(),
 		clients:   clients,
 		logStream: json.NewEncoder(os.Stderr),
-		mode:      config.ResoveMode,
+		mode:      config.ResolveMode,
 	}
 
 	s.mux.HandleFunc(".", s.handleRequest)
