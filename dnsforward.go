@@ -13,12 +13,12 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/psanford/pnsforward/conf"
-	"github.com/psanford/pnsforward/doh"
+	"github.com/psanford/dnsforward/conf"
+	"github.com/psanford/dnsforward/doh"
 )
 
 var listenAddr = flag.String("listen", "localhost:53", "Listen address")
-var confFile = flag.String("conf", "pns.conf", "Path to config file")
+var confFile = flag.String("conf", "dnsforward.conf", "Path to config file")
 
 func main() {
 	flag.Parse()

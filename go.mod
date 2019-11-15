@@ -1,4 +1,4 @@
-module github.com/psanford/pnsforward
+module github.com/psanford/dnsforward
 
 go 1.13
 
