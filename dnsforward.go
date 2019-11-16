@@ -64,10 +64,11 @@ func main() {
 type server struct {
 	mux *dns.ServeMux
 
-	logStream *json.Encoder
-	nextID    uint32
-	clients   []*client
-	mode      conf.Config_ResolveMode
+	logStream  *json.Encoder
+	nextID     uint32
+	clients    []*client
+	mode       conf.Config_ResolveMode
+	logQueries bool
 }
 
 func newServer(config *conf.Config) *server {
@@ -214,6 +215,9 @@ type logResultMsg struct {
 }
 
 func (s *server) logResult(req *dns.Msg, result queryResult) {
+	if !s.logQueries {
+		return
+	}
 	rr := msg{*req}
 	m := logResultMsg{
 		TS:          time.Now(),
@@ -267,6 +271,9 @@ type logFirstResultMsg struct {
 }
 
 func (s *server) logFirstResult(req *dns.Msg, result queryResult) {
+	if !s.logQueries {
+		return
+	}
 	rr := msg{*result.r}
 
 	m := logFirstResultMsg{
@@ -291,6 +298,9 @@ type logRequest struct {
 }
 
 func (s *server) logRequest(id string, req *dns.Msg) {
+	if !s.logQueries {
+		return
+	}
 	rr := msg{*req}
 	m := logResultMsg{
 		TS:  time.Now(),
