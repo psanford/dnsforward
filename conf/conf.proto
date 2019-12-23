@@ -17,6 +17,7 @@ message Config {
   }
   ResolveMode resolve_mode = 2;
   string listen_addr = 3; // defaults to 127.0.0.1:53; use "SOCKET_ACTIVATION" for systemd socket activation
+  bool log_queries = 4;
 }
 
 message Server {

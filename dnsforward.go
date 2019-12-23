@@ -89,10 +89,11 @@ func newServer(config *conf.Config) *server {
 	}
 
 	s := &server{
-		mux:       dns.NewServeMux(),
-		clients:   clients,
-		logStream: json.NewEncoder(os.Stderr),
-		mode:      config.ResolveMode,
+		mux:        dns.NewServeMux(),
+		clients:    clients,
+		logStream:  json.NewEncoder(os.Stderr),
+		mode:       config.ResolveMode,
+		logQueries: config.LogQueries,
 	}
 
 	s.mux.HandleFunc(".", s.handleRequest)
