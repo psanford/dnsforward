@@ -1,0 +1,33 @@
+# resolve_mode: Random|InOrder|Concurrent
+# Use Concurrent to query upstream servers at the same time
+# to compare query latencies
+resolve_mode: InOrder
+
+# For systemd socket activation set listen_addr: "SOCKET_ACTIVATION"
+listen_addr: "127.0.0.1:5300"
+
+# enable query logging for latency information
+log_queries: true
+
+server: {
+  name: "google-doh"
+  type: DOH
+  host_port: "8.8.8.8:443"
+  doh_url: "https://dns.google/dns-query"
+}
+server: {
+  name: "cloudflare"
+  type: DOH
+  host_port: "1.1.1.1:443"
+  doh_url: "https://cloudflare-dns.com/dns-query"
+}
+server: {
+  name: "google-udp"
+  type: UDP
+  host_port: "8.8.8.8:53"
+}
+server: {
+  name: "sonic"
+  type: UDP
+  host_port: "208.201.224.33:53"
+}
