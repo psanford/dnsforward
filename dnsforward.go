@@ -1,15 +1,18 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
 	"net"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -64,11 +67,12 @@ func main() {
 type server struct {
 	mux *dns.ServeMux
 
-	logStream  *json.Encoder
-	nextID     uint32
-	clients    []*client
-	mode       conf.Config_ResolveMode
-	logQueries bool
+	logStream      *json.Encoder
+	nextID         uint32
+	clients        []*client
+	mode           conf.Config_ResolveMode
+	logQueries     bool
+	localOverrides map[string]string
 }
 
 func newServer(config *conf.Config) *server {
@@ -88,12 +92,22 @@ func newServer(config *conf.Config) *server {
 		log.Fatalf("No backend servers found in config")
 	}
 
+	var overrides map[string]string
+	if config.OverrideFile != "" {
+		var err error
+		overrides, err = loadOverrides(config.OverrideFile)
+		if err != nil {
+			log.Fatalf("Failed to load local overrides: %s", err)
+		}
+	}
+
 	s := &server{
-		mux:        dns.NewServeMux(),
-		clients:    clients,
-		logStream:  json.NewEncoder(os.Stderr),
-		mode:       config.ResolveMode,
-		logQueries: config.LogQueries,
+		mux:            dns.NewServeMux(),
+		clients:        clients,
+		logStream:      json.NewEncoder(os.Stderr),
+		mode:           config.ResolveMode,
+		logQueries:     config.LogQueries,
+		localOverrides: overrides,
 	}
 
 	s.mux.HandleFunc(".", s.handleRequest)
@@ -105,10 +119,16 @@ func (s *server) handleRequest(w dns.ResponseWriter, r *dns.Msg) {
 	t0 := time.Now()
 	idI := atomic.AddUint32(&s.nextID, 1)
 	id := fmt.Sprintf("%d-%d", t0.Unix(), idI)
+	ctx := context.Background()
 
 	s.logRequest(id, r)
 
-	ctx := context.Background()
+	resp := s.localOverrideResponse(r)
+	if resp != nil {
+		w.WriteMsg(resp)
+		return
+	}
+
 	switch s.mode {
 	case conf.Config_Random:
 		clients := s.shufClients()
@@ -400,4 +420,94 @@ type classicClient struct {
 
 func (c *classicClient) Exchange(ctx context.Context, m *dns.Msg) (r *dns.Msg, rtt time.Duration, err error) {
 	return c.c.ExchangeContext(ctx, m, c.addr)
+}
+
+func loadOverrides(path string) (map[string]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	names := make(map[string]string)
+
+	r := bufio.NewReader(f)
+	for {
+		line, err := r.ReadString('\n')
+		if err == io.EOF {
+			break
+		} else if err != nil {
+			return nil, err
+		}
+
+		commentStart := strings.Index(line, "#")
+		if commentStart >= 0 {
+			line = line[:commentStart]
+		}
+
+		strings.TrimSpace(line)
+		fields := strings.Fields(line)
+
+		if len(fields) < 2 {
+			continue
+		}
+		ip := fields[0]
+
+		for _, name := range fields[1:] {
+			if !strings.HasSuffix(name, ".") {
+				name = name + "."
+			}
+			names[name] = ip
+		}
+	}
+
+	return names, nil
+}
+
+func (s *server) localOverrideResponse(r *dns.Msg) *dns.Msg {
+	var localOverrideCount int
+	localOverrides := make([]net.IP, len(r.Question))
+	for i, q := range r.Question {
+		if ip := s.localOverrides[q.Name]; ip != "" {
+			parsedIP := net.ParseIP(ip)
+			if parsedIP == nil {
+				continue
+			}
+			localOverrides[i] = parsedIP
+			localOverrideCount++
+		}
+	}
+
+	if localOverrideCount == len(r.Question) {
+		msg := *r
+		msg.Response = true
+		msg.Answer = make([]dns.RR, len(r.Question))
+		for i, ip := range localOverrides {
+			if p4 := ip.To4(); len(p4) == net.IPv4len {
+				msg.Answer[i] = &dns.A{
+					Hdr: dns.RR_Header{
+						Name:   r.Question[i].Name,
+						Rrtype: dns.TypeA,
+						Class:  dns.ClassINET,
+						Ttl:    60,
+					},
+					A: ip,
+				}
+			} else {
+				msg.Answer[i] = &dns.AAAA{
+					Hdr: dns.RR_Header{
+						Name:   r.Question[i].Name,
+						Rrtype: dns.TypeAAAA,
+						Class:  dns.ClassINET,
+						Ttl:    60,
+					},
+					AAAA: ip,
+				}
+			}
+		}
+
+		return &msg
+	}
+
+	return nil
 }
