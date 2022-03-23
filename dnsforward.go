@@ -12,11 +12,11 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"os/signal"
 	"strings"
 	"sync/atomic"
 	"time"
 
-	"github.com/coreos/go-systemd/v22/activation"
 	"github.com/miekg/dns"
 	"github.com/psanford/dnsforward/conf"
 	"github.com/psanford/dnsforward/doh"
@@ -28,6 +28,9 @@ func main() {
 	flag.Parse()
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, os.Kill)
+
 	config, err := conf.Load(*confFile)
 	if err != nil {
 		panic(err)
@@ -37,30 +40,62 @@ func main() {
 		config.ListenAddr = "127.0.0.1:53"
 	}
 
-	var pc net.PacketConn
+	s := newServer(config)
+
 	if config.ListenAddr == "SOCKET_ACTIVATION" {
-		listeners, err := activation.PacketConns()
-		if err != nil {
-			log.Fatalf("Socket activation error, are you running under systemd?: %s", err)
-		}
-		if len(listeners) == 0 {
+		listeners, packetConns := activationConns()
+		if len(packetConns) == 0 && len(packetConns) == 0 {
 			log.Fatalf("No socket provided running in SOCKET_ACTIVATION mode")
 		}
 
-		pc = listeners[0]
-	}
+		for _, l := range packetConns {
+			if l == nil {
+				continue
+			}
+			log.Printf("packetconn on: %s\n", l.LocalAddr())
+			pc := l
+			dnsServer := dns.Server{
+				PacketConn: pc,
+				Handler:    s.mux,
+			}
+			go func() {
+				panic(dnsServer.ActivateAndServe())
+			}()
+		}
 
-	s := newServer(config)
-	server := &dns.Server{
-		Net:     "udp",
-		Handler: s.mux,
-	}
-	if pc != nil {
-		server.PacketConn = pc
-		panic(server.ActivateAndServe())
+		for _, l := range listeners {
+			if l == nil {
+				continue
+			}
+			log.Printf("listen on: %s\n", l.Addr())
+			l := l
+			dnsServer := dns.Server{
+				Listener: l,
+				Handler:  s.mux,
+			}
+			go func() {
+				panic(dnsServer.ActivateAndServe())
+			}()
+		}
+
+		log.Printf("running")
+
+		<-sigs
+		os.Exit(0)
 	} else {
-		server.Addr = config.ListenAddr
-		panic(server.ListenAndServe())
+		serverTCP := &dns.Server{
+			Net:     "tcp",
+			Handler: s.mux,
+			Addr:    config.ListenAddr,
+		}
+		go serverTCP.ListenAndServe()
+		serverUDP := &dns.Server{
+			Net:     "udp",
+			Handler: s.mux,
+			Addr:    config.ListenAddr,
+		}
+
+		panic(serverUDP.ListenAndServe())
 	}
 }
 
